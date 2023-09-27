@@ -1,0 +1,1128 @@
+-- Create Authors Table
+CREATE TABLE Authors (
+    author_id NUMBER PRIMARY KEY,
+    author_name NVARCHAR2(100) NOT NULL
+);
+
+-- Create Genres Table
+CREATE TABLE Genres (
+    genre_id NUMBER PRIMARY KEY,
+    genre_name NVARCHAR2(50) NOT NULL
+);
+
+-- Create Books Table
+CREATE TABLE Books (
+    ISBN NVARCHAR2(14) PRIMARY KEY,
+    title VARCHAR2(200) NOT NULL,
+    author_id NUMBER NOT NULL,
+    genre_id NUMBER NOT NULL,
+    total_copies NUMBER CHECK (total_copies >= 0),
+    available_copies NUMBER CHECK (available_copies >= 0),
+    FOREIGN KEY (author_id) REFERENCES Authors(author_id),
+    FOREIGN KEY (genre_id) REFERENCES Genres(genre_id)
+);
+
+-- Create Members Table
+CREATE TABLE Members (
+    member_id NUMBER PRIMARY KEY,
+    first_name NVARCHAR2(50) NOT NULL,
+    last_name NVARCHAR2(50) NOT NULL,
+    email NVARCHAR2(100) UNIQUE NOT NULL,
+    registration_date DATE NOT NULL
+);
+
+-- Create Transactions Table
+CREATE TABLE Transactions (
+    transaction_id NUMBER PRIMARY KEY,
+    member_id NUMBER NOT NULL,
+    ISBN NVARCHAR2(14) NOT NULL,
+    checkout_date DATE NOT NULL,
+    due_date DATE NOT NULL,
+    return_date DATE,
+    FOREIGN KEY (member_id) REFERENCES Members(member_id),
+    FOREIGN KEY (ISBN) REFERENCES Books(ISBN)
+);
+
+-- Create Due Date Trigger
+CREATE OR REPLACE TRIGGER calculate_due_date
+BEFORE INSERT ON Transactions
+FOR EACH ROW
+BEGIN
+    :NEW.due_date := :NEW.checkout_date + 14; -- 2 weeks (14 days) after checkout
+END;
+
+-- Create Trigger to Deduct Copy On Transaction
+CREATE OR REPLACE TRIGGER DeductCopyOnTransaction
+AFTER INSERT ON Transactions
+FOR EACH ROW
+BEGIN
+    BEGIN
+        UPDATE Books
+        SET available_copies = available_copies - 1
+        WHERE ISBN = :NEW.ISBN;
+    EXCEPTION
+        WHEN OTHERS THEN 
+            DBMS_OUTPUT.PUT_LINE('Error in deducting from available copies: ' || SQLERRM);
+    END;
+END;
+
+-- Create Trigger to Add Copy On Return
+CREATE OR REPLACE TRIGGER AddCopyOnReturn
+AFTER UPDATE OF return_date ON Transactions
+FOR EACH ROW
+BEGIN
+    BEGIN
+        IF :NEW.return_date IS NOT NULL AND :OLD.return_date IS NULL THEN
+            UPDATE Books
+            SET available_copies = available_copies + 1
+            WHERE ISBN = :NEW.ISBN;
+        END IF;
+    EXCEPTION
+        WHEN OTHERS THEN 
+            DBMS_OUTPUT.PUT_LINE('Error Adding Copy on Return: ' || SQLERRM);
+    END;
+END;
+
+CREATE TABLE Fines (
+    fine_id NUMBER PRIMARY KEY,
+    transaction_id NUMBER NOT NULL,
+    fine_amount NUMBER,
+    paid_date DATE,
+    FOREIGN KEY (transaction_id) REFERENCES Transactions(transaction_id)
+);
+
+-- Creating Trigger to Calculate Fines 
+CREATE OR REPLACE TRIGGER calculate_fine_amount
+BEFORE INSERT ON Fines
+FOR EACH ROW
+DECLARE
+    due_date DATE;
+BEGIN
+    SELECT due_date INTO due_date
+    FROM Transactions
+    WHERE transaction_id = :NEW.transaction_id;
+
+    IF due_date IS NOT NULL AND :NEW.paid_date IS NULL THEN
+        :NEW.fine_amount := ROUND((SYSDATE - due_date) * 3); -- Fine is 3 units per day late
+    ELSE
+        :NEW.fine_amount := 0; -- No fine if paid
+    END IF;
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        :NEW.fine_amount := 0;
+    WHEN OTHERS THEN
+        :NEW.fine_amount := -1; -- Indicates an error. 
+END;
+
+--Trigger to update return date on transactions table when the fine has been paid
+CREATE OR REPLACE TRIGGER update_return_date_on_fine_payment
+AFTER INSERT OR UPDATE OF paid_date ON Fines
+FOR EACH ROW
+BEGIN
+    IF :NEW.paid_date IS NOT NULL THEN
+        UPDATE Transactions
+        SET return_date = :NEW.paid_date
+        WHERE transaction_id = :NEW.transaction_id;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        DBMS_OUTPUT.PUT_LINE('Error updating return date on fine payment: ' || SQLERRM);
+END;
+
+CREATE TABLE Reviews (
+    review_id NUMBER PRIMARY KEY,
+    ISBN NVARCHAR2(14) NOT NULL,
+    member_id NUMBER NOT NULL,
+    rating NUMBER CHECK (rating >= 1 AND rating <= 5),
+    review_date DATE NOT NULL,
+    FOREIGN KEY (ISBN) REFERENCES Books(ISBN),
+    FOREIGN KEY (member_id) REFERENCES Members(member_id)
+);
+COMMIT;
+
+-- Creating Roles
+ALTER SESSION SET "_ORACLE_SCRIPT"=true;
+
+CREATE ROLE librarian;
+CREATE ROLE member;
+
+-- Granting Permissions to Librarian
+GRANT SELECT, INSERT, UPDATE ON Books TO librarian;
+GRANT SELECT, INSERT, UPDATE ON Fines TO librarian;
+GRANT SELECT ON Authors TO librarian;
+GRANT SELECT, INSERT, UPDATE ON Genres TO librarian;
+GRANT SELECT, INSERT, UPDATE ON Members TO librarian;
+GRANT SELECT, INSERT, UPDATE, DELETE ON Reviews TO librarian;
+GRANT SELECT ON Transactions TO librarian;
+GRANT DELETE ON Books TO librarian;
+GRANT DELETE, INSERT ON Authors TO librarian;
+GRANT DELETE ON Genres TO librarian;
+GRANT DELETE ON Members TO librarian;
+
+-- Granting Permissions to Member
+GRANT SELECT ON Books TO member;
+GRANT SELECT ON Authors TO member;
+GRANT SELECT ON Genres TO member;
+GRANT SELECT, INSERT ON Reviews TO member;
+
+-- Creating and Granting Permissions for Available Books View
+CREATE VIEW available_books AS
+SELECT ISBN, title, available_copies
+FROM Books
+WHERE available_copies > 0
+ORDER BY available_copies;
+
+GRANT SELECT ON available_books TO member;
+GRANT SELECT ON available_books TO librarian;
+
+--Creating and Granting Permissions for WellReviewedBooksView
+
+CREATE VIEW WellReviewedBooks AS 
+SELECT b.ISBN, b.title, ROUND(AVG(r.rating), 2) AS Average_Review
+FROM Books b
+JOIN Reviews r ON b.ISBN=r.ISBN
+GROUP BY b.ISBN, b.Title
+HAVING AVG(r.Rating)>4;
+
+GRANT SELECT ON WellReviewedBooks TO librarian;
+GRANT SELECT ON WellReviewedBooks TO member;
+
+SELECT * FROM WellReviewedBooks;
+
+--
+
+
+INSERT INTO authors
+VALUES
+(1, 'Agatha Christie');
+INSERT INTO authors
+VALUES
+(2, 'William Shakespeare');
+INSERT INTO authors
+VALUES
+(3, 'J.K. Rowling');
+INSERT INTO authors
+VALUES
+(4, 'Barbara Cartland');
+INSERT INTO authors
+VALUES
+(5, 'Danielle Steel');
+INSERT INTO authors
+VALUES
+(6, 'Harold Robbins');
+INSERT INTO authors
+VALUES
+(7, 'Georges Simenon');
+INSERT INTO authors
+VALUES
+(8, 'Enid Blyton');
+INSERT INTO authors
+VALUES
+(9, 'Dr. Seuss');
+INSERT INTO authors
+VALUES
+(10, 'J.R.R. Tolkien');
+INSERT INTO authors
+VALUES
+(11, 'E.L. James');
+INSERT INTO authors
+VALUES
+(12, 'Sidney Sheldon');
+INSERT INTO authors
+VALUES
+(13, 'Corin Tellado');
+INSERT INTO authors
+VALUES (14, 'Paulo Coelho');
+INSERT INTO authors
+VALUES (15, 'Charles Dickens');
+INSERT INTO authors
+VALUES (16, 'Stephen King');
+COMMIT;
+
+select * from authors;
+
+--Populating Genres Table
+
+INSERT INTO Genres (genre_id, genre_name)
+VALUES (1, 'Fiction');
+
+INSERT INTO Genres (genre_id, genre_name)
+VALUES (2, 'Mystery');
+
+INSERT INTO Genres (genre_id, genre_name)
+VALUES (3, 'Science Fiction');
+
+INSERT INTO Genres (genre_id, genre_name)
+VALUES (4, 'Fantasy');
+
+INSERT INTO Genres (genre_id, genre_name)
+VALUES (5, 'Romance');
+
+INSERT INTO Genres (genre_id, genre_name)
+VALUES (6, 'Thriller');
+
+INSERT INTO Genres (genre_id, genre_name)
+VALUES (7, 'Historical Fiction');
+
+INSERT INTO Genres (genre_id, genre_name)
+VALUES (8, 'Horror');
+
+INSERT INTO Genres (genre_id, genre_name)
+VALUES (9, 'Adventure');
+
+INSERT INTO Genres (genre_id, genre_name)
+VALUES (10, 'Young Adult');
+
+INSERT INTO Genres (genre_id, genre_name)
+VALUES (11, 'Non-Fiction');
+
+INSERT INTO Genres (genre_id, genre_name)
+VALUES (12, 'Biography');
+
+INSERT INTO Genres (genre_id, genre_name)
+VALUES (13, 'Self-Help');
+
+INSERT INTO Genres (genre_id, genre_name)
+VALUES (14, 'Cooking');
+
+INSERT INTO Genres (genre_id, genre_name)
+VALUES (15, 'Travel');
+COMMIT;
+
+SELECT * FROM genres; 
+
+---Populating Books Table
+
+
+-- Inserting data into Books Table for Agatha Christie
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0062073488', 'Murder on the Orient Express', 1, 2, 10, 10);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0062074560', 'The Mysterious Affair at Styles', 1, 2, 8, 8);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0312979478', 'The Murder of Roger Ackroyd', 1, 2, 6, 6);
+
+
+-- William Shakespeare
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0743477123', 'Romeo and Juliet', 2, 1, 15, 15);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0743482745', 'Hamlet', 2, 1, 12, 12);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0743477567', 'Macbeth', 2, 1, 10, 10);
+
+-- J.K. Rowling
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0439708180', 'Harry Potter and the Philosophers Stone', 3, 4, 20, 18);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0439064873', 'Harry Potter and the Chamber of Secrets', 3, 4, 18, 17);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0439358071', 'Harry Potter and the Prisoner of Azkaban', 3, 4, 15, 15);
+
+
+-- Barbara Cartland
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0786008084', 'Love in the Highlands', 4, 5, 5, 5);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0786008428', 'The Fugitive Heart', 4, 5, 8, 8);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0786010247', 'The Disgraceful Duke', 4, 5, 6, 6);
+
+-- Danielle Steel
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0440205627', 'The Promise', 5, 5, 12, 12);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0440190749', 'Fine Things', 5, 5, 8, 8);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0440168892', 'Wanderlust', 5, 5, 10, 10);
+
+-- Harold Robbins
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0671704165', 'The Betsy', 6, 5, 8, 8);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0671704172', 'The Pirate', 6, 5, 6, 6);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0671704189', 'The Adventurers', 6, 5, 10, 10);
+
+-- Georges Simenon
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0156551002', 'Maigret and the Bum', 7, 2, 6, 6);
+
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0156551019', 'Maigret and the Minister', 7, 2, 8, 8);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0156028591', 'Maigrets Christmas', 7, 2, 5, 5);
+
+-- Enid Blyton
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0340786463', 'The Famous Five: Five on a Treasure Island', 8, 6, 10, 10);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0340786425', 'The Famous Five: Five Go Adventuring Again', 8, 6, 7, 7);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0340786395', 'The Famous Five: Five Run Away Together', 8, 6, 9, 9);
+
+
+-- Dr. Seuss
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0394800011', 'The Cat in the Hat', 9, 7, 15, 15);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0394800165', 'Green Eggs and Ham', 9, 7, 12, 12);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0394800134', 'One Fish Two Fish Red Fish Blue Fish', 9, 7, 8, 8);
+
+-- J.R.R. Tolkien
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0544003415', 'The Hobbit', 10, 3, 10, 9);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0544338012', 'The Fellowship of the Ring', 10, 3, 15, 15);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0544338019', 'The Two Towers', 10, 3, 12, 12);
+
+
+-- E.L. James
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0345804044', 'Fifty Shades of Grey', 11, 8, 8, 8);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0345804068', 'Fifty Shades Darker', 11, 8, 7, 7);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0345804075', 'Fifty Shades Freed', 11, 8, 9, 9);
+
+-- Sidney Sheldon
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0062355384', 'The Other Side of Midnight', 12, 2, 10, 9);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0062015622', 'Master of the Game', 12, 5, 15, 15); 
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0062015592', 'If Tomorrow Comes', 12, 5, 12, 12);
+
+-- Paulo Coelho
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0061122415', 'The Alchemist', 13, 9, 18, 17);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0061233845', 'Brida', 13, 9, 10, 10);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0061859952', 'The Valkyries', 13, 9, 8, 8);
+
+-- Charles Dickens
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0141439600', 'Great Expectations', 14, 1, 12, 12);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-1503290567', 'A Tale of Two Cities', 14, 1, 15, 15);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-1846140490', 'David Copperfield', 14, 1, 10, 10);
+
+-- Stephen King
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-0451169525', 'The Shining', 15, 10, 15, 15);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-1501180989', 'It', 15, 10, 18, 18);
+
+INSERT INTO Books (ISBN, title, author_id, genre_id, total_copies, available_copies)
+VALUES ('978-1501142970', 'The Stand', 15, 10, 20, 19);
+COMMIT;
+
+SELECT * FROM books;
+
+-- Inserting data into Members Table
+INSERT INTO Members (member_id, first_name, last_name, email, registration_date)
+VALUES (1, 'John', 'Doe', 'john.doe@example.com', TO_DATE('2023-08-12', 'YYYY-MM-DD'));
+
+INSERT INTO Members (member_id, first_name, last_name, email, registration_date)
+VALUES (2, 'Jane', 'Smith', 'jane.smith@example.com', TO_DATE('2023-08-10', 'YYYY-MM-DD'));
+
+INSERT INTO Members (member_id, first_name, last_name, email, registration_date)
+VALUES (3, 'Michael', 'Johnson', 'michael.johnson@example.com', TO_DATE('2023-08-05', 'YYYY-MM-DD'));
+
+INSERT INTO Members (member_id, first_name, last_name, email, registration_date)
+VALUES (4, 'Emily', 'Brown', 'emily.brown@example.com', TO_DATE('2023-07-28', 'YYYY-MM-DD'));
+
+INSERT INTO Members (member_id, first_name, last_name, email, registration_date)
+VALUES (5, 'William', 'Jones', 'william.jones@example.com', TO_DATE('2023-07-20', 'YYYY-MM-DD'));
+
+INSERT INTO Members (member_id, first_name, last_name, email, registration_date)
+VALUES (6, 'David', 'Williams', 'david.williams@example.com', TO_DATE('2023-07-15', 'YYYY-MM-DD'));
+
+INSERT INTO Members (member_id, first_name, last_name, email, registration_date)
+VALUES (7, 'Ethan', 'Hall', 'ethan.hall@example.com', TO_DATE('2023-05-12', 'YYYY-MM-DD'));
+
+INSERT INTO Members (member_id, first_name, last_name, email, registration_date)
+VALUES (8, 'Isabella', 'Young', 'isabella.young@example.com', TO_DATE('2023-05-10', 'YYYY-MM-DD'));
+
+INSERT INTO Members (member_id, first_name, last_name, email, registration_date)
+VALUES (9, 'Ethan', 'Wilson', 'ethan.wilson@example.com', TO_DATE('2023-05-05', 'YYYY-MM-DD'));
+
+INSERT INTO Members (member_id, first_name, last_name, email, registration_date)
+VALUES (10, 'Olivia', 'Garcia', 'olivia.garcia@example.com', TO_DATE('2023-05-15', 'YYYY-MM-DD'));
+
+INSERT INTO Members (member_id, first_name, last_name, email, registration_date)
+VALUES (11, 'Daniel', 'Miller', 'daniel.miller@example.com', TO_DATE('2023-05-10', 'YYYY-MM-DD'));
+
+INSERT INTO Members (member_id, first_name, last_name, email, registration_date)
+VALUES (12, 'Sophia', 'Lee', 'sophia.lee@example.com', TO_DATE('2023-04-28', 'YYYY-MM-DD'));
+COMMIT;
+
+
+--Populating Transactions Table
+INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES
+    (1, 3, '978-0061122415', TO_DATE('2023-08-01', 'YYYY-MM-DD'), TO_DATE('2023-08-10', 'YYYY-MM-DD'));
+INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES
+    (2, 6, '978-0061859952', TO_DATE('2023-08-03', 'YYYY-MM-DD'), TO_DATE('2023-08-16', 'YYYY-MM-DD'));
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES
+    (3, 9, '978-0062074560', TO_DATE('2023-08-05', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES
+    (4, 2, '978-0156028591', TO_DATE('2023-08-07', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES
+    (5, 10, '978-0312979478', TO_DATE('2023-08-09', 'YYYY-MM-DD'), TO_DATE('2023-08-20', 'YYYY-MM-DD'));
+INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES
+    (6, 4, '978-0345804044', TO_DATE('2023-08-11', 'YYYY-MM-DD'), NULL);
+INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES
+    (7, 7, '978-0439708180', TO_DATE('2023-08-13', 'YYYY-MM-DD'), NULL);
+    -- Sample data insertion continued
+INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES
+    (8, 1, '978-0345804068', TO_DATE('2023-08-15', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES
+    (9, 12, '978-0345804075', TO_DATE('2023-08-17', 'YYYY-MM-DD'), TO_DATE('2023-08-29', 'YYYY-MM-DD'));
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES
+    (10, 8, '978-0394800011', TO_DATE('2023-08-19', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES (11, 5, '978-0394800134', TO_DATE('2023-08-21', 'YYYY-MM-DD'), TO_DATE('2023-09-01', 'YYYY-MM-DD'));
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES (12, 11, '978-0439064873', TO_DATE('2023-08-23', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES (13, 3, '978-0439358071', TO_DATE('2023-08-25', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES (14, 6, '978-0439708180', TO_DATE('2023-08-27', 'YYYY-MM-DD'), TO_DATE('2023-09-08', 'YYYY-MM-DD'));
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES (15, 7, '978-0671704165', TO_DATE('2023-09-25', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES (16, 2, '978-0671704172', TO_DATE('2023-09-27', 'YYYY-MM-DD'), NULL);
+   INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES  (17, 10, '978-0671704189', TO_DATE('2023-09-29', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES (18, 4, '978-0743477123', TO_DATE('2023-10-01', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES (19, 9, '978-0743477567', TO_DATE('2023-10-03', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES (20, 1, '978-0743482745', TO_DATE('2023-10-05', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES (21, 8, '978-0786008084', TO_DATE('2023-10-07', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES (22, 5, '978-0786008428', TO_DATE('2023-10-09', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES(23, 11, '978-0786010247', TO_DATE('2023-10-11', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES (24, 3, '978-1501142970', TO_DATE('2023-10-13', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES (25, 6, '978-1501180989', TO_DATE('2023-10-15', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES(26, 7, '978-1503290567', TO_DATE('2023-10-17', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES(27, 2, '978-1846140490', TO_DATE('2023-10-19', 'YYYY-MM-DD'), NULL);
+
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES(28, 11, '978-0671704165', TO_DATE('2023-09-13', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES(29, 3, '978-0671704172', TO_DATE('2023-09-15', 'YYYY-MM-DD'), NULL);
+     INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES(30, 6, '978-0671704189', TO_DATE('2023-09-17', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES(31, 7, '978-0743477123', TO_DATE('2023-09-19', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES(32, 2, '978-0743477567', TO_DATE('2023-09-21', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES(33, 10, '978-0743482745', TO_DATE('2023-09-23', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES(34, 4, '978-0786008084', TO_DATE('2023-09-25', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES(35, 9, '978-0786008428', TO_DATE('2023-09-27', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES(36, 1, '978-0786010247', TO_DATE('2023-09-29', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES(37, 8, '978-1501142970', TO_DATE('2023-10-01', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES(38, 5, '978-1501180989', TO_DATE('2023-10-03', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES(39, 11, '978-1503290567', TO_DATE('2023-10-05', 'YYYY-MM-DD'), NULL);
+    INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, return_date)
+VALUES(40, 3, '978-1846140490', TO_DATE('2023-10-07', 'YYYY-MM-DD'), NULL);
+
+
+-- Sample data insertion for overdue transactions 
+INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, due_date)
+VALUES (41, 1, '978-0061122415', TO_DATE('2023-07-01', 'YYYY-MM-DD'), TO_DATE('2023-07-15', 'YYYY-MM-DD'));
+
+INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, due_date)
+VALUES (42, 2, '978-0061859952', TO_DATE('2023-07-03', 'YYYY-MM-DD'), TO_DATE('2023-07-17', 'YYYY-MM-DD'));
+
+INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, due_date)
+VALUES (43, 3, '978-0062074560', TO_DATE('2023-07-05', 'YYYY-MM-DD'), TO_DATE('2023-07-19', 'YYYY-MM-DD'));
+
+INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, due_date)
+VALUES (44, 4, '978-0156028591', TO_DATE('2023-07-07', 'YYYY-MM-DD'), TO_DATE('2023-07-21', 'YYYY-MM-DD'));
+
+INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, due_date)
+VALUES (45, 5, '978-0312979478', TO_DATE('2023-07-09', 'YYYY-MM-DD'), TO_DATE('2023-07-23', 'YYYY-MM-DD'));
+
+INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, due_date)
+VALUES (46, 6, '978-0345804044', TO_DATE('2023-07-11', 'YYYY-MM-DD'), TO_DATE('2023-07-25', 'YYYY-MM-DD'));
+
+INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, due_date)
+VALUES (47, 7, '978-0439708180', TO_DATE('2023-07-13', 'YYYY-MM-DD'), TO_DATE('2023-07-27', 'YYYY-MM-DD'));
+
+INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, due_date)
+VALUES (48, 8, '978-0544338012', TO_DATE('2023-07-15', 'YYYY-MM-DD'), TO_DATE('2023-07-29', 'YYYY-MM-DD'));
+
+INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, due_date)
+VALUES (49, 9, '978-0671704165', TO_DATE('2023-07-17', 'YYYY-MM-DD'), TO_DATE('2023-07-31', 'YYYY-MM-DD'));
+
+INSERT INTO Transactions (transaction_id, member_id, ISBN, checkout_date, due_date)
+VALUES (50, 10, '978-0786008084', TO_DATE('2023-07-19', 'YYYY-MM-DD'), TO_DATE('2023-08-02', 'YYYY-MM-DD'));
+
+-- Update checkout dates for transactions 1 to 40 to have different dates before today
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-01', 'YYYY-MM-DD')
+WHERE transaction_id = 1;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-02', 'YYYY-MM-DD')
+WHERE transaction_id = 2;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-03', 'YYYY-MM-DD')
+WHERE transaction_id = 3;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-04', 'YYYY-MM-DD')
+WHERE transaction_id = 4;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-05', 'YYYY-MM-DD')
+WHERE transaction_id = 5;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-06', 'YYYY-MM-DD')
+WHERE transaction_id = 6;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-07', 'YYYY-MM-DD')
+WHERE transaction_id = 7;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-08', 'YYYY-MM-DD')
+WHERE transaction_id = 8;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-09', 'YYYY-MM-DD')
+WHERE transaction_id = 9;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-10', 'YYYY-MM-DD')
+WHERE transaction_id = 10;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-11', 'YYYY-MM-DD')
+WHERE transaction_id = 11;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-12', 'YYYY-MM-DD')
+WHERE transaction_id = 12;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-13', 'YYYY-MM-DD')
+WHERE transaction_id = 13;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-14', 'YYYY-MM-DD')
+WHERE transaction_id = 14;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-15', 'YYYY-MM-DD')
+WHERE transaction_id = 15;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-16', 'YYYY-MM-DD')
+WHERE transaction_id = 16;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-17', 'YYYY-MM-DD')
+WHERE transaction_id = 17;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-18', 'YYYY-MM-DD')
+WHERE transaction_id = 18;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-19', 'YYYY-MM-DD')
+WHERE transaction_id = 19;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-20', 'YYYY-MM-DD')
+WHERE transaction_id = 20;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-21', 'YYYY-MM-DD')
+WHERE transaction_id = 21;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-22', 'YYYY-MM-DD')
+WHERE transaction_id = 22;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-23', 'YYYY-MM-DD')
+WHERE transaction_id = 23;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-24', 'YYYY-MM-DD')
+WHERE transaction_id = 24;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-25', 'YYYY-MM-DD')
+WHERE transaction_id = 25;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-26', 'YYYY-MM-DD')
+WHERE transaction_id = 26;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-27', 'YYYY-MM-DD')
+WHERE transaction_id = 27;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-28', 'YYYY-MM-DD')
+WHERE transaction_id = 28;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-29', 'YYYY-MM-DD')
+WHERE transaction_id = 29;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-30', 'YYYY-MM-DD')
+WHERE transaction_id = 30;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-07-31', 'YYYY-MM-DD')
+WHERE transaction_id = 31;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-08-01', 'YYYY-MM-DD')
+WHERE transaction_id = 32;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-08-02', 'YYYY-MM-DD')
+WHERE transaction_id = 33;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-08-03', 'YYYY-MM-DD')
+WHERE transaction_id = 34;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-08-04', 'YYYY-MM-DD')
+WHERE transaction_id = 35;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-08-05', 'YYYY-MM-DD')
+WHERE transaction_id = 36;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-08-06', 'YYYY-MM-DD')
+WHERE transaction_id = 37;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-08-07', 'YYYY-MM-DD')
+WHERE transaction_id = 38;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-08-08', 'YYYY-MM-DD')
+WHERE transaction_id = 39;
+
+UPDATE Transactions
+SET checkout_date = TO_DATE('2023-08-09', 'YYYY-MM-DD')
+WHERE transaction_id = 40;
+
+
+UPDATE Transactions
+SET due_date = checkout_date + 14;
+COMMIT;
+
+UPDATE Transactions 
+SET return_Date = due_date-3
+where transaction_id  IN (1, 7, 34, 23, 12);
+
+
+
+UPDATE Transactions t
+SET t.return_date = f.paid_date
+FROM fines f
+WHERE f.paid_date IS NOT NULL
+AND t.transaction_id = f.transaction_id;
+
+
+SELECT * FROM transactions where return_date>due_date;
+
+-- Populating Fines Table With Overdue Transactions
+INSERT INTO Fines (fine_id, transaction_id, paid_date)
+VALUES (1, 41, TO_DATE('2023-08-02', 'YYYY-MM-DD'));
+
+INSERT INTO Fines (fine_id, transaction_id, paid_date)
+VALUES (2, 42, NULL);
+
+INSERT INTO Fines (fine_id, transaction_id,  paid_date)
+VALUES (3, 43, TO_DATE('2023-07-25', 'YYYY-MM-DD'));
+
+INSERT INTO Fines (fine_id, transaction_id, paid_date)
+VALUES (4, 44, NULL);
+
+INSERT INTO Fines (fine_id, transaction_id, paid_date)
+VALUES (5, 45, NULL);
+
+INSERT INTO Fines (fine_id, transaction_id, paid_date)
+VALUES (6, 46, TO_DATE('2023-08-05', 'YYYY-MM-DD'));
+
+INSERT INTO Fines (fine_id, transaction_id, paid_date)
+VALUES (7, 47, NULL);
+
+INSERT INTO Fines (fine_id, transaction_id, paid_date)
+VALUES (8, 48, TO_DATE('2023-07-10', 'YYYY-MM-DD'));
+
+INSERT INTO Fines (fine_id, transaction_id, paid_date)
+VALUES (9, 49, NULL);
+
+INSERT INTO Fines (fine_id, transaction_id, paid_date)
+VALUES (10, 50, NULL);
+
+UPDATE Fines
+SET paid_date = TO_DATE('2023-07-10', 'YYYY-MM-DD')
+WHERE fine_id = 8;
+
+COMMIT;
+
+SELECT * from fines;
+
+--Populating Reviews Table
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (1, '978-0062073488', 1, 2, TO_DATE('2023-08-15', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (2, '978-0062074560', 2, 5, TO_DATE('2023-08-14', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (3, '978-0312979478', 3, 3, TO_DATE('2023-08-13', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (4, '978-0743477123', 4, 5, TO_DATE('2023-08-12', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (5, '978-0743482745', 5, 4, TO_DATE('2023-08-11', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (6, '978-0743477567', 6, 3, TO_DATE('2023-08-10', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (7, '978-0439708180', 1, 1, TO_DATE('2023-08-15', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (8, '978-0439064873', 2, 4, TO_DATE('2023-08-14', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (9, '978-0439358071', 3, 1, TO_DATE('2023-08-13', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (10, '978-0544003415', 7, 4, TO_DATE('2023-08-12', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (11, '978-0544338012', 9, 5, TO_DATE('2023-08-11', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (12, '978-0544338019', 1, 1, TO_DATE('2023-08-10', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (13, '978-0062073488', 2, 4, TO_DATE('2023-08-15', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (14, '978-0062073488', 3, 3, TO_DATE('2023-08-14', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (15, '978-0316469827', 3, 5, TO_DATE('2023-08-13', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (16, '978-0394800011', 9, 2, TO_DATE('2023-08-12', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (17, '978-0394800165', 1, 5, TO_DATE('2023-08-11', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (18, '978-0394800134', 7, 2, TO_DATE('2023-08-10', 'YYYY-MM-DD'));
+
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (19, '978-0743477123', 4, 4, TO_DATE('2023-08-13', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (20, '978-0743477123', 5, 5, TO_DATE('2023-08-12', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (21, '978-0439708180', 6, 3, TO_DATE('2023-08-11', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (22, '978-0439708180', 7, 5, TO_DATE('2023-08-10', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (23, '978-0786008084', 8, 1, TO_DATE('2023-08-09', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (24, '978-0786008084', 9, 5, TO_DATE('2023-08-08', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (25, '978-0671704165', 10, 3, TO_DATE('2023-08-07', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (26, '978-0671704165', 11, 3, TO_DATE('2023-08-06', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (27, '978-0671704165', 12, 4, TO_DATE('2023-08-05', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (28, '978-0340786395', 1, 2, TO_DATE('2023-08-04', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (29, '978-0061122415', 4, 3, TO_DATE('2023-08-03', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (30, '978-0061122415', 5, 1, TO_DATE('2023-08-02', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (31, '978-0544003415', 1, 4, TO_DATE('2023-08-01', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (32, '978-0544003415', 2, 5, TO_DATE('2023-07-31', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (33, '978-0345804044', 3, 2, TO_DATE('2023-07-30', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (34, '978-0345804044', 4, 5, TO_DATE('2023-07-29', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (35, '978-0062355384', 5, 1, TO_DATE('2023-07-28', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (36, '978-0062355384', 6, 2, TO_DATE('2023-07-27', 'YYYY-MM-DD'));
+
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (37, '978-0440190749', 7, 2, TO_DATE('2023-08-26', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (38, '978-0440190749', 8, 5, TO_DATE('2023-08-25', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (39, '978-0345804075', 9, 4, TO_DATE('2023-08-24', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (40, '978-0345804075', 10, 2, TO_DATE('2023-08-23', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (41, '978-0786010247', 11, 4, TO_DATE('2023-08-22', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (42, '978-0786010247', 12, 5, TO_DATE('2023-08-21', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (43, '978-0156551019', 3, 4, TO_DATE('2023-08-20', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (44, '978-0156551019', 4, 2, TO_DATE('2023-08-19', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (45, '978-0156028591', 5, 4, TO_DATE('2023-08-18', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (46, '978-0156028591', 1, 2, TO_DATE('2023-08-17', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (47, '978-0340786425', 2, 1, TO_DATE('2023-08-16', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (48, '978-0340786425', 3, 5, TO_DATE('2023-08-15', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (49, '978-0062015592', 4, 4, TO_DATE('2023-08-14', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (50, '978-0062015592', 5, 2, TO_DATE('2023-08-13', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (51, '978-1501180989', 6, 4, TO_DATE('2023-08-12', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (52, '978-1501180989', 7, 5, TO_DATE('2023-08-11', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (53, '978-0451169525', 8, 4, TO_DATE('2023-08-10', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (54, '978-0451169525', 9, 1, TO_DATE('2023-08-09', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (55, '978-0671704189', 10, 4, TO_DATE('2023-08-08', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (56, '978-0671704189', 11, 2, TO_DATE('2023-08-07', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (57, '978-1846140490', 12, 4, TO_DATE('2023-08-06', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (58, '978-1846140490', 1, 5, TO_DATE('2023-08-05', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (59, '978-0340786395', 4, 4, TO_DATE('2023-08-04', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (60, '978-0340786395', 5, 5, TO_DATE('2023-08-03', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (61, '978-1503290567', 1, 4, TO_DATE('2023-08-02', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (62, '978-1503290567', 2, 5, TO_DATE('2023-08-01', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (63, '978-0671704172', 1, 1, TO_DATE('2023-08-27', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date)
+VALUES (64, '978-0671704172', 2, 5, TO_DATE('2023-08-26', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (65, '978-0345804068', 3, 4, TO_DATE('2023-08-25', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (66, '978-0345804068', 4, 5, TO_DATE('2023-08-24', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (67, '978-0062015622', 5, 4, TO_DATE('2023-08-23', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (68, '978-0062015622', 6, 5, TO_DATE('2023-08-22', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (69, '978-0141439600', 7, 1, TO_DATE('2023-08-21', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (70, '978-0141439600', 8, 5, TO_DATE('2023-08-20', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (71, '978-1501142970', 9, 4, TO_DATE('2023-08-19', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (72, '978-1501142970', 10, 5, TO_DATE('2023-08-18', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (73, '978-0786008428', 11, 4, TO_DATE('2023-08-17', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (74, '978-0786008428', 12, 1, TO_DATE('2023-08-16', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (75, '978-0061859952', 1, 4, TO_DATE('2023-08-15', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (76, '978-0061859952', 2, 5, TO_DATE('2023-08-14', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (78, '978-0440168892', 4, 5, TO_DATE('2023-08-12', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (79, '978-0061233845', 5, 1, TO_DATE('2023-08-11', 'YYYY-MM-DD'));
+INSERT INTO Reviews (review_id, ISBN, member_id, rating, review_date) 
+VALUES (80, '978-0061233845', 6, 2, TO_DATE('2023-08-10', 'YYYY-MM-DD'));
+COMMIT;
+SELECT * FROM REVIEWS;
+
+
+--Queries
+--Select Average Ratings for books and displays these
+SELECT ROUND(AVG(rating), 2) AS avg_rating, r.ISBN, b.title
+FROM Reviews r
+JOIN Books b ON r.ISBN = b.ISBN
+GROUP BY r.ISBN, b.title;
+
+--Select Highest Average Rating by Genre
+SELECT g.genre_name, ROUND(AVG(r.rating),2) AS avg_rating
+FROM Genres g
+JOIN Books b ON g.genre_id = b.genre_id
+LEFT JOIN Reviews r ON b.ISBN = r.ISBN
+GROUP BY g.genre_name
+ORDER BY avg_rating DESC;
+
+
+--Query which books are currently checked out by a specific member
+SELECT b.title, t.checkout_date, t.due_date, m.first_name, m.last_name
+FROM Transactions t
+JOIN Books b ON t.ISBN = b.ISBN
+JOIN Members m ON t.member_id = m.member_id
+WHERE t.member_id = 3 AND t.return_date IS NULL;
+
+--Query Which books each member has checked out most recently
+SELECT m.first_name, m.last_name, b.ISBN, b.title, MAX(t.checkout_date) AS latest_checkout
+FROM Members m
+JOIN Transactions t ON m.member_id = t.member_id
+JOIN Books b ON t.ISBN = b.ISBN
+GROUP BY m.first_name, m.last_name, b.ISBN, b.title;
+
+--Query which members have checked out which books more than once
+SELECT m.first_name, m.last_name, b.title, COUNT(*) AS checkout_count
+FROM Members m
+JOIN Transactions t ON m.member_id = t.member_id
+JOIN Books b ON t.ISBN = b.ISBN
+GROUP BY m.first_name, m.last_name, b.title
+HAVING COUNT(*) > 1;
+
+--Query to see which books have yet to be reviewed
+SELECT b.title
+FROM Books b
+LEFT JOIN Reviews r ON b.ISBN = r.ISBN
+WHERE r.ISBN IS NULL;
+
+--Query to see the members currently with the largest fines
+SELECT m.first_name, m.last_name, SUM(f.fine_amount) AS total_fines
+FROM Members m
+JOIN Transactions t ON m.member_id = t.member_id
+JOIN Fines f ON t.transaction_id = f.transaction_id
+GROUP BY m.first_name, m.last_name
+ORDER BY total_fines DESC
+
+--Query to retrieve emails of members that have books on loan
+SELECT m.email
+FROM Members m
+JOIN Transactions t ON m.member_id = t.member_id
+WHERE t.return_date IS NULL;
+
+--Query to see the number of available copies of books grouped by genre
+SELECT g.genre_name, SUM(b.available_copies) AS total_available
+FROM Genres g
+JOIN Books b ON g.genre_id = b.genre_id
+GROUP BY g.genre_name
+ORDER BY total_available DESC;
+
+--Query to select books, their authors and their respective average ratings
+SELECT b.title, a.author_name, ROUND(AVG(r.rating), 2) AS avg_rating
+FROM Books b
+JOIN Authors a ON b.author_id = a.author_id
+LEFT JOIN Reviews r ON b.ISBN = r.ISBN
+GROUP BY b.title, a.author_name
+HAVING AVG(r.rating) IS NOT NULL
+ORDER BY avg_rating DESC;
+
+
+SELECt isbn from books where authoR_id = (select author_id FROM authors WHERE author_name LIKE '%Tolkien%')
+
+UPDATE reviews 
+SET rating = 5 
+WHERE isbn IN ('978-0544003415',
+'978-0544338012',
+'978-0544338019')
+
+
+
+
+
+
